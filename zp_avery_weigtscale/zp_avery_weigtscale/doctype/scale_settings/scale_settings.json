@@ -1,0 +1,175 @@
+{
+    "actions": [],
+    "allow_rename": 1,
+    "creation": "2026-06-18 23:55:51.752255",
+    "doctype": "DocType",
+    "engine": "InnoDB",
+    "field_order": [
+        "connection_settings_section",
+        "enabled",
+        "auto_connect",
+        "section_break_connection",
+        "scale_model",
+        "communication_type",
+        "column_break_connection",
+        "protocol",
+        "unit",
+        "serial_settings_section",
+        "baud_rate",
+        "column_break_serial",
+        "stop_bits",
+        "data_bits",
+        "parity",
+        "read_settings_section",
+        "command",
+        "read_interval",
+        "stable_weight_only",
+        "debug_mode",
+        "debug_weight"
+    ],
+    "fields": [
+        {
+            "default": "0",
+            "fieldname": "enabled",
+            "fieldtype": "Check",
+            "label": "Enabled"
+        },
+        {
+            "default": "1",
+            "fieldname": "debug_mode",
+            "fieldtype": "Check",
+            "label": "Enable Debug Mode"
+        },
+        {
+        "default": "1.250",
+        "fieldname": "debug_weight",
+        "fieldtype": "Float",
+        "label": "Debug Weight"
+        },
+        {
+            "default": "Avery Berkel FX120",
+            "fieldname": "scale_model",
+            "fieldtype": "Data",
+            "label": "Scale Model"
+        },
+        {
+            "default": "RS232",
+            "fieldname": "communication_type",
+            "fieldtype": "Select",
+            "label": "Communication Type",
+            "options": "\nUSB\nRS232\nUSB Serial\nTCP/IP\nBluetooth"
+        },
+        {
+            "fieldname": "baud_rate",
+            "fieldtype": "Int",
+            "label": "Baud Rate"
+        },
+        {
+            "fieldname": "data_bits",
+            "fieldtype": "Int",
+            "label": "Data Bits"
+        },
+        {
+            "fieldname": "stop_bits",
+            "fieldtype": "Int",
+            "label": "Stop Bits"
+        },
+        {
+            "fieldname": "parity",
+            "fieldtype": "Select",
+            "label": "Parity",
+            "options": "\nNone\nEven\nOdd"
+        },
+        {
+            "default": "Mettler Toledo 8217",
+            "fieldname": "protocol",
+            "fieldtype": "Data",
+            "label": "Protocol"
+        },
+        {
+            "fieldname": "connection_settings_section",
+            "fieldtype": "Section Break",
+            "label": "Connection Settings"
+        },
+        {
+            "fieldname": "section_break_connection",
+            "fieldtype": "Section Break"
+        },
+        {
+            "fieldname": "column_break_connection",
+            "fieldtype": "Column Break"
+        },
+        {
+            "fieldname": "serial_settings_section",
+            "fieldtype": "Section Break",
+            "label": "Serial Settings"
+        },
+        {
+            "fieldname": "read_settings_section",
+            "fieldtype": "Section Break",
+            "label": "Read Settings"
+        },
+        {
+            "fieldname": "column_break_serial",
+            "fieldtype": "Column Break"
+        },
+        {
+            "default": "1",
+            "fieldname": "auto_connect",
+            "fieldtype": "Check",
+            "label": "Auto Connect"
+        },
+        {
+            "default": "Kg",
+            "fieldname": "unit",
+            "fieldtype": "Select",
+            "label": "Weight Unit",
+            "options": "\nKg\ng\nlb\noz"
+        },
+        {
+            "default": "W",
+            "description": "Command sent to the scale to request the current weight.",
+            "fieldname": "command",
+            "fieldtype": "Data",
+            "label": "Read Command"
+        },
+        {
+            "default": "500",
+            "fieldname": "read_interval",
+            "fieldtype": "Int",
+            "label": "Read Interval (ms)"
+        },
+        {
+            "default": "1",
+            "fieldname": "stable_weight_only",
+            "fieldtype": "Check",
+            "label": "Stable Weight Only"
+        }
+    ],
+    "grid_page_length": 50,
+    "index_web_pages_for_search": 1,
+    "issingle": 1,
+    "links": [],
+    "modified": "2026-06-19 00:08:48.068058",
+    "modified_by": "Administrator",
+    "module": "Zp Avery Weigtscale",
+    "name": "Scale Settings",
+    "owner": "Administrator",
+    "permissions": [
+        {
+            "create": 1,
+            "delete": 1,
+            "email": 1,
+            "print": 1,
+            "read": 1,
+            "role": "System Manager",
+            "share": 1,
+            "write": 1
+        }
+    ],
+    "row_format": "Dynamic",
+    "rows_threshold_for_grid_search": 20,
+    "sort_field": "creation",
+    "sort_order": "DESC",
+    "states": []
+}
