@@ -315,7 +315,7 @@ T("ParserRegistry.resolve() returns AveryBerkelFX120Parser by protocolId", async
 });
 
 T("ParserRegistry.resolve() returns MettlerToledo8217Parser by name", async (A) => {
-	const parser = ParserRegistry.resolve("Mettler Toledo MT-8217");
+	const parser = ParserRegistry.resolve("Mettler Toledo 8217");
 	A.ok(parser instanceof MettlerToledo8217Parser);
 });
 
