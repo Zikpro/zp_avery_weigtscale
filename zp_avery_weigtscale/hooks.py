@@ -9,29 +9,28 @@ app_license = "mit"
 # ------------------
 
 # required_apps = []
-app_include_js = [
-    # ── Phase 1: Core contracts ───────────────────────────────────────────────
+_scale_js = [
     # Load order matters: each file depends only on files above it.
     "/assets/zp_avery_weigtscale/js/core/scale_error.js",
     "/assets/zp_avery_weigtscale/js/core/weight_reading.js",
     "/assets/zp_avery_weigtscale/js/core/i_weight_parser.js",
-    # ── Phase 2: Serial I/O ───────────────────────────────────────────────────
     "/assets/zp_avery_weigtscale/js/serial/serial_buffer.js",
     "/assets/zp_avery_weigtscale/js/serial/serial_manager.js",
-    # ── Phase 3: Parsers (concrete classes before registry) ───────────────────
     "/assets/zp_avery_weigtscale/js/parsers/avery_berkel_fx120_parser.js",
     "/assets/zp_avery_weigtscale/js/parsers/mettler_toledo_8217_parser.js",
     "/assets/zp_avery_weigtscale/js/parsers/generic_rs232_parser.js",
     "/assets/zp_avery_weigtscale/js/parsers/parser_registry.js",
-    # ── Phase 5: Debug simulator ──────────────────────────────────────────────
     "/assets/zp_avery_weigtscale/js/simulator/scale_simulator.js",
-    # ── Phase 4: Orchestrator ─────────────────────────────────────────────────
     "/assets/zp_avery_weigtscale/js/weight_service.js",
-    # ── Phase 7: POSNext widget ───────────────────────────────────────────────
     "/assets/zp_avery_weigtscale/js/pos_scale_widget.js",
-    # ── Phase 6: Tests ───────────────────────────────────────────────────────
     "/assets/zp_avery_weigtscale/js/tests/scale_tests.js",
 ]
+
+# Frappe desk pages (Scale Settings form, Run Tests button)
+app_include_js = _scale_js
+
+# Web pages — picks up pos.html which uses {% for link in web_include_js %}
+web_include_js = _scale_js
 
 # Each item in the list will be shown as an app in the apps page
 # add_to_apps_screen = [
