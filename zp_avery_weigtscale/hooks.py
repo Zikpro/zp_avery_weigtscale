@@ -9,8 +9,6 @@ app_license = "mit"
 # ------------------
 
 # required_apps = []
-extend_bootinfo = "zp_avery_weigtscale.boot.extend_bootinfo"
-
 _scale_js = [
     # Load order matters: each file depends only on files above it.
     "/assets/zp_avery_weigtscale/js/core/scale_error.js",
