@@ -124,8 +124,10 @@ class SerialManager {
 	}
 
 	/**
-	 * Write a command string to the scale.
-	 * @param {string} command  — e.g. "W" or "S" depending on protocol
+	 * Write a command to the scale. Accepts a string (e.g. "W") or a Uint8Array
+	 * of raw bytes (e.g. ENQ 0x05, DC1 0x11 for the ENQ/ACK/DC1 handshake).
+	 *
+	 * @param {string|Uint8Array|number[]} command
 	 */
 	async write(command) {
 		if (!this._writer) {
@@ -133,7 +135,15 @@ class SerialManager {
 		}
 
 		try {
-			await this._writer.write(command);
+			let bytes;
+			if (command instanceof Uint8Array) {
+				bytes = command;
+			} else if (Array.isArray(command)) {
+				bytes = new Uint8Array(command);
+			} else {
+				bytes = new TextEncoder().encode(String(command));
+			}
+			await this._writer.write(bytes);
 		} catch (err) {
 			throw new ScaleError(ScaleErrorCode.WRITE_FAILED, err.message, err);
 		}
@@ -144,11 +154,11 @@ class SerialManager {
 	// =========================================================================
 
 	_setupWriter() {
-		this._encoder = new TextEncoderStream();
-		// Pipe encoder output into the port's writable stream.
-		// Errors here surface as CONNECTION_LOST via the read loop.
-		this._encoder.readable.pipeTo(this._port.writable).catch(() => {});
-		this._writer = this._encoder.writable.getWriter();
+		// Write directly to port.writable so both string commands and raw byte
+		// arrays (e.g. ENQ 0x05, DC1 0x11 for the handshake) can be sent without
+		// a TextEncoderStream in the middle.
+		this._writer = this._port.writable.getWriter();
+		this._encoder = null; // not used; kept as field so _releaseWriter is safe
 	}
 
 	_startReadLoop() {
@@ -201,10 +211,11 @@ class SerialManager {
 	async _releaseWriter() {
 		if (this._writer) {
 			try {
+				// Close the writer so port.close() can proceed cleanly.
+				// (Web Serial requires both readable and writable to be closed first.)
 				await this._writer.close();
-				this._writer.releaseLock();
 			} catch {
-				// Already released or encoder closed — safe to ignore
+				// Already closed — safe to ignore
 			}
 			this._writer  = null;
 			this._encoder = null;
@@ -249,10 +260,10 @@ class SerialManager {
 		const parityMap = { None: "none", Even: "even", Odd: "odd" };
 
 		return {
-			baudRate : Number(config.baud_rate)  || 9600,
+			baudRate : Number(config.baud_rate)  || 2400,
 			dataBits : Number(config.data_bits)  || 7,
 			stopBits : Number(config.stop_bits)  || 1,
-			parity   : parityMap[config.parity]  || "even",
+			parity   : parityMap[config.parity]  ?? "none",
 		};
 	}
 }

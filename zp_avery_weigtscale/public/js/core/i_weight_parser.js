@@ -72,6 +72,18 @@ class IWeightParser {
 	parse(rawData) {
 		throw new Error(`${this.constructor.name} must implement parse()`);
 	}
+
+	/**
+	 * Optional: returns the two-phase byte sequences needed to trigger one reading.
+	 * For active-polling protocols (e.g. ENQ/ACK/DC1) the parser returns the bytes
+	 * WeightService must write before waiting for a frame.
+	 * For streaming protocols (scale sends data continuously) return null — no write needed.
+	 *
+	 * @returns {{ phase1: Uint8Array, phase2: Uint8Array } | null}
+	 */
+	requestFrame() {
+		return null;
+	}
 }
 
 window.IWeightParser = IWeightParser;

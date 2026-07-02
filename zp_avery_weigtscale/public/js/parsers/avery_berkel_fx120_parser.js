@@ -1,52 +1,74 @@
 /**
- * AveryBerkelFX120Parser — decodes RS232 frames from the Avery Berkel FX120.
+ * AveryBerkelFX120Parser — decodes ENQ/ACK/DC1 handshake frames from the
+ * Avery Berkel FX120.
  *
- * The FX120 runs in Mettler Toledo 8217 compatibility mode by default.
- * Response to the "W" command:
+ * Confirmed by hardware test against a physical FX120 (2026-07-01):
  *
- *   [STX] [stability] [sign] [NNNNN] [.] [DDD] [SP] [unit] [CR]
+ *   Serial settings: 2400 baud, 7 data bits, 1 stop bit, no parity (2400 7N1)
  *
- *   Byte 0   : STX (0x02) — start of text marker
- *   Byte 1   : stability  — SPACE (0x20) = stable, "?" (0x3F) = unstable
- *   Byte 2   : sign       — "+" or "-"
- *   Bytes 3–7: integer part, 5 digits zero-padded
- *   Byte 8   : decimal point "."
- *   Bytes 9–11: decimal part, 3 digits
- *   Byte 12  : SPACE
- *   Bytes 13–14: unit ("kg", "lb", " g", "oz")
- *   Byte 15  : CR (0x0D) — frame terminator
+ *   This scale does NOT stream weight continuously. It must be actively
+ *   polled with a handshake:
  *
- * Example (stable, 1.234 kg):
- *   02 20 2B 30 30 30 30 31 2E 32 33 34 20 6B 67 0D
- *    ^  ^  ^  <-- 00001 --> .  <234>  SP kg  CR
- *   STX SP  +
+ *     Host  → ENQ (0x05)
+ *     Scale → ACK (0x06)
+ *     Host  → DC1 (0x11)
+ *     Scale → frame
  *
- * Example (unstable):
- *   02 3F 2B 30 30 30 30 31 2E 32 33 34 20 6B 67 0D
- *        ^
- *        ? = unstable
+ *   Frame format (9 bytes):
+ *     [STX=0x02][STATUS][D1][D2][D3][D4][D5][US=0x1F][ETX=0x03]
+ *
+ *   STATUS is a bit-flag byte. Bit 5 (0x20) = stable, 0 = unstable/in-motion.
+ *
+ *   D1–D5 are ASCII digits giving the weight in whole grams. Divide by 1000
+ *   to get kg.
+ *
+ *   Verified sample (226 g weight on the platform):
+ *     02 29 30 30 32 32 36 1F 03
+ *     STX STATUS  '0' '0' '2' '2' '6'  US  ETX
+ *     status 0x29 = 0b00101001 → bit 5 set → stable
+ *     digits "00226" → 226 g → 0.226 kg
+ *
+ *   The ACK byte from the handshake may still be sitting in SerialBuffer
+ *   when the frame arrives (it never matches the ETX terminator, so it is
+ *   never emitted on its own). parse()/canParse() therefore locate STX
+ *   rather than assuming it is byte 0.
  */
 class AveryBerkelFX120Parser extends IWeightParser {
 
 	static get protocolId()   { return "avery_berkel_fx120"; }
 	static get protocolName() { return "Avery Berkel FX120 (MT-8217)"; }
 
-	/** Frame ends at CR (0x0D). */
+	/** Bit 5 of the status byte flags a stable reading. */
+	static STABLE_BIT = 0x20;
+
+	/** Frame ends at ETX (0x03). */
 	getFrameTerminator() {
-		return new Uint8Array([0x0D]);
+		return new Uint8Array([0x03]);
 	}
 
 	/**
-	 * Quick heuristic check: frame must start with STX and be at least 14 bytes.
+	 * Two-phase handshake the scale requires before it returns a frame.
+	 * WeightService writes phase1, waits briefly for the ACK, then writes phase2.
+	 */
+	requestFrame() {
+		return {
+			phase1: new Uint8Array([0x05]), // ENQ
+			phase2: new Uint8Array([0x11]), // DC1
+		};
+	}
+
+	/**
+	 * Quick heuristic check: an STX byte must be present with at least
+	 * 9 bytes remaining from that point (STX + STATUS + 5 digits + US + ETX).
 	 */
 	canParse(rawData) {
-		return rawData instanceof Uint8Array
-			&& rawData.length >= 14
-			&& rawData[0] === 0x02;
+		if (!(rawData instanceof Uint8Array) || rawData.length < 9) return false;
+		const stxIndex = AveryBerkelFX120Parser._findStx(rawData);
+		return stxIndex !== -1 && (rawData.length - stxIndex) >= 9;
 	}
 
 	/**
-	 * @param  {Uint8Array} rawData
+	 * @param  {Uint8Array} rawData  — may have a leading ACK (0x06) byte from the handshake
 	 * @returns {WeightReading}
 	 * @throws {ScaleError}
 	 */
@@ -55,54 +77,48 @@ class AveryBerkelFX120Parser extends IWeightParser {
 			throw new ScaleError(
 				ScaleErrorCode.PARSE_ERROR,
 				`AveryBerkelFX120Parser: unexpected frame (length=${rawData?.length}, ` +
-				`first byte=0x${rawData?.[0]?.toString(16) ?? "?"})`
+				`hex=${AveryBerkelFX120Parser._toHex(rawData)})`
 			);
 		}
 
-		// Byte 1: stability flag (read directly from bytes, before any string conversion)
-		const stable = rawData[1] === 0x20; // SPACE = stable, '?' = unstable
+		const start  = AveryBerkelFX120Parser._findStx(rawData);
+		const status = rawData[start + 1];
+		const stable = (status & AveryBerkelFX120Parser.STABLE_BIT) !== 0;
 
-		// Decode bytes skipping STX, stopping at CR.
-		// Result keeps the leading stability char: " +00001.234 kg" or "?+00001.234 kg"
-		const text = AveryBerkelFX120Parser._bytesToString(rawData);
+		let digits = "";
+		for (let i = start + 2; i <= start + 6; i++) {
+			digits += String.fromCharCode(rawData[i]);
+		}
 
-		// Match against the full text — do NOT trim first.
-		// The leading space is the stability byte; trimming it breaks the regex anchor.
-		const match = text.match(/^[? ][+-]?(\d+\.\d+)\s+(\w+)$/);
+		const grams = parseInt(digits, 10);
 
-		if (!match) {
+		if (!isFinite(grams)) {
 			throw new ScaleError(
 				ScaleErrorCode.PARSE_ERROR,
-				`AveryBerkelFX120Parser: cannot extract weight from "${text.trim()}"`
+				`AveryBerkelFX120Parser: non-numeric weight digits "${digits}"`
 			);
 		}
 
-		const value = parseFloat(match[1]);
-		const unit  = match[2].toLowerCase();
+		const value = grams / 1000; // grams -> kg
 
-		if (!isFinite(value)) {
-			throw new ScaleError(
-				ScaleErrorCode.PARSE_ERROR,
-				`AveryBerkelFX120Parser: parsed NaN from "${text.trim()}"`
-			);
-		}
-
-		return new WeightReading({ value, unit, stable, raw: text.trim() });
+		return new WeightReading({ value, unit: "kg", stable, raw: digits });
 	}
 
 	// -------------------------------------------------------------------------
 	// Private
 	// -------------------------------------------------------------------------
 
-	/** Convert Uint8Array to ASCII string, skipping STX (0x02) and stopping at CR (0x0D). */
-	static _bytesToString(bytes) {
-		let result = "";
-		for (let i = 0; i < bytes.length; i++) {
-			if (bytes[i] === 0x02) continue; // skip STX
-			if (bytes[i] === 0x0D) break;    // stop at CR
-			result += String.fromCharCode(bytes[i]);
+	/** Index of the first STX (0x02) byte, or -1 if absent. */
+	static _findStx(rawData) {
+		for (let i = 0; i < rawData.length; i++) {
+			if (rawData[i] === 0x02) return i;
 		}
-		return result;
+		return -1;
+	}
+
+	static _toHex(bytes) {
+		if (!bytes) return "null";
+		return Array.from(bytes).map(b => b.toString(16).padStart(2, "0")).join(" ");
 	}
 }
 

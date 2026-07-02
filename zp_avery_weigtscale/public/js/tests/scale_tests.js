@@ -242,28 +242,46 @@ T("SerialBuffer.flush() clears state", async (A) => {
 });
 
 // ─── AveryBerkelFX120Parser ──────────────────────────────────────────────────
+// Protocol confirmed by hardware test against a physical FX120 (2026-07-01).
+// Frame: STX(02) + STATUS(1B) + 5 ASCII digits(grams) + US(1F) + ETX(03)
+// Status bit 5 (0x20): 1 = stable, 0 = unstable.
 
-T("AveryBerkelFX120Parser parses a stable 1.234 kg frame", async (A) => {
+T("AveryBerkelFX120Parser parses hardware-confirmed stable 226g frame", async (A) => {
 	const parser = new AveryBerkelFX120Parser();
-
-	// Frame: STX SP + 00001.234 kg CR
-	const frame = new TextEncoder().encode(" +00001.234 kg");
-	const bytes = new Uint8Array([0x02, ...frame, 0x0D]);
-
+	// Confirmed sample: 02 29 30 30 32 32 36 1F 03
+	// status 0x29 = 0b00101001 → bit 5 set → stable; digits "00226" → 226g → 0.226 kg
+	const bytes = new Uint8Array([0x02, 0x29, 0x30, 0x30, 0x32, 0x32, 0x36, 0x1F, 0x03]);
 	const reading = parser.parse(bytes);
-	A.equal(reading.value,  1.234, "value");
+	A.equal(reading.value,  0.226, "226g → 0.226 kg");
 	A.equal(reading.unit,   "kg",  "unit");
+	A.equal(reading.stable, true,  "stable: status bit 5 set");
+});
+
+T("AveryBerkelFX120Parser parses unstable frame (status bit 5 = 0)", async (A) => {
+	const parser = new AveryBerkelFX120Parser();
+	// Status 0x09 = 0b00001001 → bit 5 NOT set → unstable
+	const bytes = new Uint8Array([0x02, 0x09, 0x30, 0x30, 0x32, 0x32, 0x36, 0x1F, 0x03]);
+	const reading = parser.parse(bytes);
+	A.equal(reading.stable, false, "unstable: status bit 5 not set");
+	A.equal(reading.value,  0.226, "value still parsed");
+});
+
+T("AveryBerkelFX120Parser handles leading ACK byte from handshake", async (A) => {
+	const parser = new AveryBerkelFX120Parser();
+	// ACK (0x06) arrives before the frame and sits in SerialBuffer.
+	// Parser must skip it by locating STX.
+	const bytes = new Uint8Array([0x06, 0x02, 0x29, 0x30, 0x30, 0x32, 0x32, 0x36, 0x1F, 0x03]);
+	const reading = parser.parse(bytes);
+	A.equal(reading.value,  0.226, "correct value with leading ACK");
 	A.equal(reading.stable, true,  "stable");
 });
 
-T("AveryBerkelFX120Parser parses an unstable frame (? byte)", async (A) => {
+T("AveryBerkelFX120Parser.requestFrame() returns ENQ and DC1 handshake bytes", async (A) => {
 	const parser = new AveryBerkelFX120Parser();
-	const frame  = new TextEncoder().encode("?+00001.234 kg");
-	const bytes  = new Uint8Array([0x02, ...frame, 0x0D]);
-
-	const reading = parser.parse(bytes);
-	A.equal(reading.stable, false, "unstable");
-	A.equal(reading.value,  1.234, "value still parsed");
+	const req = parser.requestFrame();
+	A.ok(req !== null,            "not null for active-poll protocol");
+	A.equal(req.phase1[0], 0x05, "phase1 is ENQ");
+	A.equal(req.phase2[0], 0x11, "phase2 is DC1");
 });
 
 T("AveryBerkelFX120Parser throws PARSE_ERROR on garbage frame", async (A) => {
@@ -277,7 +295,7 @@ T("AveryBerkelFX120Parser throws PARSE_ERROR on garbage frame", async (A) => {
 
 T("AveryBerkelFX120Parser.canParse() rejects frame without STX", async (A) => {
 	const parser = new AveryBerkelFX120Parser();
-	A.notOk(parser.canParse(new Uint8Array([0x20, 0x41, 0x42, 0x0D])));
+	A.notOk(parser.canParse(new Uint8Array([0x06, 0x29, 0x30, 0x30])));
 });
 
 // ─── GenericRS232Parser ──────────────────────────────────────────────────────

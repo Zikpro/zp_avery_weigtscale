@@ -281,9 +281,25 @@ class WeightService {
 				}
 			});
 
-			// Send the command AFTER setting up the handler to avoid race conditions
+			// Send the request AFTER setting up the handler to avoid race conditions.
+			//
+			// ENQ/ACK protocol (e.g. AveryBerkelFX120):
+			//   phase1 (ENQ) → scale responds with ACK → phase2 (DC1) → scale sends frame.
+			//   The ACK byte accumulates in SerialBuffer but never triggers a frame emit
+			//   (it does not match ETX). parse() skips it by locating STX.
+			//
+			// Streaming protocol (e.g. MettlerToledo, Generic):
+			//   requestFrame() returns null → send the text command from settings (e.g. "W").
 			try {
-				await this._serial.write(this._config.command || "W");
+				const handshake = this._parser.requestFrame();
+				if (handshake) {
+					await this._serial.write(handshake.phase1);             // ENQ
+					await WeightService._delay(50);                         // wait for ACK
+					await this._serial.write(handshake.phase2);             // DC1
+				} else {
+					const cmd = this._config.command;
+					if (cmd) await this._serial.write(cmd);
+				}
 			} catch (err) {
 				if (!settled) {
 					settled = true;

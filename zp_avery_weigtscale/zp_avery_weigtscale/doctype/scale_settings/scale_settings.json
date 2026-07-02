@@ -60,28 +60,32 @@
             "options": "\nUSB\nRS232\nUSB Serial\nTCP/IP\nBluetooth"
         },
         {
+            "default": "2400",
             "fieldname": "baud_rate",
             "fieldtype": "Int",
             "label": "Baud Rate"
         },
         {
+            "default": "7",
             "fieldname": "data_bits",
             "fieldtype": "Int",
             "label": "Data Bits"
         },
         {
+            "default": "1",
             "fieldname": "stop_bits",
             "fieldtype": "Int",
             "label": "Stop Bits"
         },
         {
+            "default": "None",
             "fieldname": "parity",
             "fieldtype": "Select",
             "label": "Parity",
             "options": "\nNone\nEven\nOdd"
         },
         {
-            "default": "Mettler Toledo 8217",
+            "default": "Avery Berkel FX120 (MT-8217)",
             "fieldname": "protocol",
             "fieldtype": "Data",
             "label": "Protocol"
@@ -127,8 +131,8 @@
             "options": "\nKg\ng\nlb\noz"
         },
         {
-            "default": "W",
-            "description": "Command sent to the scale to request the current weight.",
+            "default": "",
+            "description": "Command string for streaming protocols (e.g. W for Mettler Toledo). Leave blank for ENQ/ACK protocols — the handshake is handled automatically by the parser.",
             "fieldname": "command",
             "fieldtype": "Data",
             "label": "Read Command"
