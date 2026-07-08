@@ -206,6 +206,12 @@ class WeightService {
 	/**
 	 * Start emitting "scale:weight" events on every successful poll.
 	 * Errors are emitted as "scale:error" and polling continues.
+	 *
+	 * Uses recursive setTimeout instead of setInterval so the next poll
+	 * only starts AFTER the current one completes. setInterval fires every
+	 * N ms regardless of whether the previous async tick is still running,
+	 * which causes concurrent polls — multiple ENQ/DC1 sequences in flight
+	 * simultaneously — leading to READ_TIMEOUT errors on every cycle.
 	 */
 	startPolling() {
 		if (this._pollTimer !== null) return;
@@ -213,6 +219,8 @@ class WeightService {
 		const interval = Number(this._config.read_interval) || WeightService.POLL_INTERVAL_MS;
 
 		const tick = async () => {
+			if (this._pollTimer === null) return; // stopPolling() was called
+
 			try {
 				const reading = await this.getWeight();
 				this._emit("scale:weight", reading);
@@ -225,17 +233,23 @@ class WeightService {
 
 				if (!scaleErr.isRecoverable()) {
 					this.stopPolling();
+					return;
 				}
+			}
+
+			// Schedule the next poll only after this one is fully done.
+			if (this._pollTimer !== null) {
+				this._pollTimer = setTimeout(tick, interval);
 			}
 		};
 
-		this._pollTimer = setInterval(tick, interval);
+		this._pollTimer = setTimeout(tick, 0); // start immediately
 	}
 
 	/** Stop the polling loop. */
 	stopPolling() {
 		if (this._pollTimer !== null) {
-			clearInterval(this._pollTimer);
+			clearTimeout(this._pollTimer);
 			this._pollTimer = null;
 		}
 	}
@@ -250,6 +264,10 @@ class WeightService {
 	 */
 	_pollOnce() {
 		return new Promise(async (resolve, reject) => {
+			// Discard any leftover bytes from a previous poll (e.g. a stale ACK byte
+			// that arrived after the frame was already emitted).
+			this._buffer.flush();
+
 			let settled = false;
 
 			const timeout = setTimeout(() => {
@@ -294,7 +312,7 @@ class WeightService {
 				const handshake = this._parser.requestFrame();
 				if (handshake) {
 					await this._serial.write(handshake.phase1);             // ENQ
-					await WeightService._delay(50);                         // wait for ACK
+					await WeightService._delay(150);                        // wait for ACK (USB adapters can take 50-120ms)
 					await this._serial.write(handshake.phase2);             // DC1
 				} else {
 					const cmd = this._config.command;

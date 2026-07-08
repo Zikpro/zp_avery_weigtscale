@@ -7,15 +7,14 @@ frappe.ui.form.on("Scale Settings", {
 		frm.add_custom_button(__("Test Connection"), async () => {
 			frappe.show_alert({ message: __("Connecting to scale…"), indicator: "blue" });
 
+			let service = null;
 			try {
-				const service = await WeightService.fromSettings();
+				service = await WeightService.fromSettings();
 				await service.connect();
 
 				frappe.show_alert({ message: __("Connected. Reading weight…"), indicator: "blue" });
 
 				const reading = await service.getWeight();
-
-				await service.disconnect();
 
 				frappe.show_alert({
 					message   : __("Scale read: ") + reading.toString(),
@@ -28,6 +27,10 @@ frappe.ui.form.on("Scale Settings", {
 					message   : err.message || String(err),
 					indicator : "red",
 				});
+			} finally {
+				// Always disconnect — even on timeout or parse error — so the port
+				// is released and the next "Test Connection" click can open it cleanly.
+				if (service) await service.disconnect().catch(() => {});
 			}
 		});
 
