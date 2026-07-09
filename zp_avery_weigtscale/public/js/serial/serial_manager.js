@@ -197,14 +197,22 @@ class SerialManager {
 	// =========================================================================
 
 	async _releaseReader() {
-		if (this._reader) {
-			try {
-				this._reader.cancel();
-				this._reader.releaseLock();
-			} catch {
-				// Already released — safe to ignore
-			}
-			this._reader = null;
+		const reader = this._reader;
+		if (!reader) return;
+		// Null immediately so a concurrent call from _runReadLoop's finally is a no-op.
+		this._reader = null;
+		try {
+			// MUST await cancel() — it resolves the pending reader.read() in the loop.
+			// Without await, port.close() runs before the reader is done and Chrome keeps
+			// the port locked, causing "Failed to open serial port" on the next connect.
+			await reader.cancel();
+		} catch {
+			// Port may already be closed — safe to ignore
+		}
+		try {
+			reader.releaseLock();
+		} catch {
+			// Already released — safe to ignore
 		}
 	}
 

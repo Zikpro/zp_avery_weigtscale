@@ -71,9 +71,9 @@ class POSScaleWidget {
 
 		panel.style.cssText = `
 			position: fixed;
-			bottom: 24px;
-			right: 24px;
-			z-index: 9999;
+			top: 0;
+			left: 0;
+			z-index: 290;
 			background: #ffffff;
 			border: 1px solid #d1d5db;
 			border-radius: 12px;
@@ -92,6 +92,8 @@ class POSScaleWidget {
 		this._statusEl   = panel.querySelector("#scale-status-dot");
 		this._connectBtn = panel.querySelector("#scale-connect-btn");
 		this._applyBtn   = panel.querySelector("#scale-apply-btn");
+
+		this._makeDraggable();
 	}
 
 	static _injectStyles() {
@@ -100,7 +102,8 @@ class POSScaleWidget {
 		style.id    = "scale-widget-styles";
 		style.textContent = `
 			.scale-widget-inner { display: flex; flex-direction: column; gap: 10px; }
-			.scale-widget-header { display: flex; align-items: center; gap: 6px; }
+			.scale-widget-header { display: flex; align-items: center; gap: 6px; cursor: grab; }
+			.scale-widget-header:active { cursor: grabbing; }
 			.scale-widget-title { font-size: 12px; font-weight: 600; color: #374151; text-transform: uppercase; letter-spacing: 0.05em; }
 			.scale-dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
 			.scale-dot--connected    { background: #22c55e; }
@@ -317,6 +320,94 @@ class POSScaleWidget {
 		nativeSetter.call(input, value);
 		input.dispatchEvent(new Event("input",  { bubbles: true }));
 		input.dispatchEvent(new Event("change", { bubbles: true }));
+	}
+
+	// =========================================================================
+	// Draggable
+	// =========================================================================
+
+	_makeDraggable() {
+		const el     = this._el;
+		const handle = el.querySelector(".scale-widget-header");
+
+		// Default position: bottom-right corner
+		const defaultLeft = window.innerWidth  - el.offsetWidth  - 24;
+		const defaultTop  = window.innerHeight - el.offsetHeight - 24;
+
+		// Restore saved position, clamping to the current viewport size
+		let startLeft = defaultLeft;
+		let startTop  = defaultTop;
+		try {
+			const saved = localStorage.getItem("scale-widget-pos");
+			if (saved) {
+				const { top, left } = JSON.parse(saved);
+				startLeft = Math.max(0, Math.min(Number(left), window.innerWidth  - el.offsetWidth));
+				startTop  = Math.max(0, Math.min(Number(top),  window.innerHeight - el.offsetHeight));
+			}
+		} catch {
+			// Ignore corrupt localStorage entry
+		}
+
+		el.style.left = startLeft + "px";
+		el.style.top  = startTop  + "px";
+
+		let dragging = false;
+		let originX  = 0, originY = 0, originLeft = 0, originTop = 0;
+
+		const onStart = (clientX, clientY) => {
+			dragging    = true;
+			originX     = clientX;
+			originY     = clientY;
+			originLeft  = el.offsetLeft;
+			originTop   = el.offsetTop;
+			el.style.transition = "none";
+		};
+
+		const onMove = (clientX, clientY) => {
+			if (!dragging) return;
+			const newLeft = Math.max(0, Math.min(
+				originLeft + (clientX - originX),
+				window.innerWidth - el.offsetWidth
+			));
+			const newTop = Math.max(0, Math.min(
+				originTop + (clientY - originY),
+				window.innerHeight - el.offsetHeight
+			));
+			el.style.left = newLeft + "px";
+			el.style.top  = newTop  + "px";
+		};
+
+		const onEnd = () => {
+			if (!dragging) return;
+			dragging = false;
+			try {
+				localStorage.setItem("scale-widget-pos", JSON.stringify({
+					top  : el.offsetTop,
+					left : el.offsetLeft,
+				}));
+			} catch {}
+		};
+
+		// Mouse
+		handle.addEventListener("mousedown", (e) => {
+			onStart(e.clientX, e.clientY);
+			e.preventDefault(); // prevent text selection while dragging
+		});
+		document.addEventListener("mousemove", (e) => onMove(e.clientX, e.clientY));
+		document.addEventListener("mouseup",   onEnd);
+
+		// Touch
+		handle.addEventListener("touchstart", (e) => {
+			const t = e.touches[0];
+			onStart(t.clientX, t.clientY);
+		}, { passive: true });
+		document.addEventListener("touchmove", (e) => {
+			if (!dragging) return;
+			const t = e.touches[0];
+			onMove(t.clientX, t.clientY);
+			e.preventDefault();
+		}, { passive: false });
+		document.addEventListener("touchend", onEnd);
 	}
 
 	_setStatus(state) {
