@@ -54,9 +54,29 @@ class WeightService {
 		this._buffer    = debugMode ? null : new SerialBuffer(parser.getFrameTerminator());
 		this._pollTimer = null;
 		this._connected = false;
+		this._ackWaiter = null; // set during ENQ→DC1 phase to intercept the ACK byte
 
 		if (!debugMode) {
-			this._serial.onData(chunk => this._buffer.push(chunk));
+			this._serial.onData(chunk => {
+				// During the ENQ→DC1 handshake phase, intercept the ACK (0x06) byte.
+				// Any 0x06 arriving before DC1 is sent must be the scale's ACK response.
+				if (this._ackWaiter && chunk instanceof Uint8Array) {
+					const ackIdx = chunk.indexOf(0x06);
+					if (ackIdx !== -1) {
+						// Pass any non-ACK bytes (before or after) to the buffer
+						const rest = new Uint8Array([
+							...chunk.slice(0, ackIdx),
+							...chunk.slice(ackIdx + 1),
+						]);
+						if (rest.length > 0) this._buffer.push(rest);
+						const resolve = this._ackWaiter;
+						this._ackWaiter = null;
+						resolve(); // unblock _waitForAck()
+						return;
+					}
+				}
+				this._buffer.push(chunk);
+			});
 			this._serial.onDisconnect(err => {
 				this._connected = false;
 				this._emit("scale:disconnected", { error: err });
@@ -273,6 +293,7 @@ class WeightService {
 			const timeout = setTimeout(() => {
 				if (settled) return;
 				settled = true;
+				this._ackWaiter = null; // cancel any pending ACK wait
 				this._buffer.flush();
 				reject(new ScaleError(
 					ScaleErrorCode.READ_TIMEOUT,
@@ -303,8 +324,8 @@ class WeightService {
 			//
 			// ENQ/ACK protocol (e.g. AveryBerkelFX120):
 			//   phase1 (ENQ) → scale responds with ACK → phase2 (DC1) → scale sends frame.
-			//   The ACK byte accumulates in SerialBuffer but never triggers a frame emit
-			//   (it does not match ETX). parse() skips it by locating STX.
+			//   The ACK byte (0x06) is intercepted by onData before reaching SerialBuffer,
+			//   which triggers _waitForAck() to resolve immediately so DC1 is sent on time.
 			//
 			// Streaming protocol (e.g. MettlerToledo, Generic):
 			//   requestFrame() returns null → send the text command from settings (e.g. "W").
@@ -312,7 +333,8 @@ class WeightService {
 				const handshake = this._parser.requestFrame();
 				if (handshake) {
 					await this._serial.write(handshake.phase1);             // ENQ
-					await WeightService._delay(150);                        // wait for ACK (USB adapters can take 50-120ms)
+					await this._waitForAck(300);                            // wait for ACK byte (0x06) or 300ms timeout
+					if (settled) return;                                    // poll already timed out while waiting for ACK
 					await this._serial.write(handshake.phase2);             // DC1
 				} else {
 					const cmd = this._config.command;
@@ -326,6 +348,31 @@ class WeightService {
 					reject(err);
 				}
 			}
+		});
+	}
+
+	// =========================================================================
+	// Private — ACK detection
+	// =========================================================================
+
+	/**
+	 * Wait for the ACK byte (0x06) to arrive from the scale, up to `timeoutMs`.
+	 * Resolves when ACK is detected by the onData interceptor (this._ackWaiter).
+	 * If ACK never arrives within the timeout, resolves anyway so DC1 is still sent.
+	 */
+	_waitForAck(timeoutMs = 300) {
+		return new Promise((resolve) => {
+			const timer = setTimeout(() => {
+				// ACK didn't arrive in time — clear the waiter and send DC1 anyway.
+				// This handles scales that skip ACK or adapters with extreme latency.
+				this._ackWaiter = null;
+				resolve();
+			}, timeoutMs);
+
+			this._ackWaiter = () => {
+				clearTimeout(timer);
+				resolve();
+			};
 		});
 	}
 
