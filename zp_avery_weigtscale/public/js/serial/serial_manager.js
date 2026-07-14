@@ -69,7 +69,10 @@ class SerialManager {
 	async connect(config) {
 		SerialManager._assertWebSerialSupport();
 
+		console.log(`[Scale CONNECT] connect() called — isConnected=${this.isConnected} hasPort=${!!this._port}`);
+
 		if (this.isConnected) {
+			console.warn("[Scale CONNECT] already connected — throwing PORT_ALREADY_OPEN");
 			throw new ScaleError(
 				ScaleErrorCode.PORT_ALREADY_OPEN,
 				"Serial port is already open. Call disconnect() first."
@@ -77,17 +80,23 @@ class SerialManager {
 		}
 
 		const ports = await navigator.serial.getPorts();
+		console.log(`[Scale CONNECT] getPorts() returned ${ports.length} remembered port(s)`);
 
 		try {
 			this._port = ports.length > 0 ? ports[0] : await navigator.serial.requestPort();
+			console.log(`[Scale CONNECT] port selected — readable.locked=${this._port.readable?.locked} writable.locked=${this._port.writable?.locked}`);
 		} catch (err) {
 			// User dismissed the port picker
 			throw new ScaleError(ScaleErrorCode.PORT_NOT_SELECTED, "No port was selected.", err);
 		}
 
 		try {
-			await this._port.open(SerialManager._buildOpenOptions(config));
+			const opts = SerialManager._buildOpenOptions(config);
+			console.log(`[Scale CONNECT] port.open() with`, opts);
+			await this._port.open(opts);
+			console.log(`[Scale CONNECT] port.open() SUCCESS`);
 		} catch (err) {
+			console.error(`[Scale CONNECT] port.open() FAILED:`, err.message);
 			this._port = null;
 			throw new ScaleError(ScaleErrorCode.CONNECTION_FAILED, err.message, err);
 		}
@@ -108,18 +117,29 @@ class SerialManager {
 	 * Safe to call even if the port is already closed.
 	 */
 	async disconnect() {
+		console.log(`[Scale DISCONNECT] disconnect() called — hasPort=${!!this._port} hasReader=${!!this._reader} hasWriter=${!!this._writer}`);
 		this._readLoopActive = false;
 
 		await this._releaseReader();
+		console.log(`[Scale DISCONNECT] reader released`);
+
 		await this._releaseWriter();
+		console.log(`[Scale DISCONNECT] writer released`);
 
 		if (this._port) {
+			const readableLocked = this._port.readable?.locked;
+			const writableLocked = this._port.writable?.locked;
+			console.log(`[Scale DISCONNECT] calling port.close() — readable.locked=${readableLocked} writable.locked=${writableLocked}`);
 			try {
 				await this._port.close();
-			} catch {
+				console.log(`[Scale DISCONNECT] port.close() SUCCESS`);
+			} catch (err) {
+				console.error(`[Scale DISCONNECT] port.close() FAILED:`, err.message);
 				// Port may already be closed after a disconnect event — ignore
 			}
 			this._port = null;
+		} else {
+			console.log(`[Scale DISCONNECT] no port to close`);
 		}
 	}
 
@@ -218,15 +238,19 @@ class SerialManager {
 
 	async _releaseWriter() {
 		if (this._writer) {
+			console.log(`[Scale DISCONNECT] calling writer.close()`);
 			try {
 				// Close the writer so port.close() can proceed cleanly.
 				// (Web Serial requires both readable and writable to be closed first.)
 				await this._writer.close();
-			} catch {
-				// Already closed — safe to ignore
+				console.log(`[Scale DISCONNECT] writer.close() SUCCESS`);
+			} catch (err) {
+				console.error(`[Scale DISCONNECT] writer.close() FAILED:`, err.message, "— port may stay locked");
 			}
 			this._writer  = null;
 			this._encoder = null;
+		} else {
+			console.log(`[Scale DISCONNECT] no writer to release`);
 		}
 	}
 

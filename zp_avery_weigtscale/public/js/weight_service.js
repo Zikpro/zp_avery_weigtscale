@@ -58,11 +58,15 @@ class WeightService {
 
 		if (!debugMode) {
 			this._serial.onData(chunk => {
+				const hex = Array.from(chunk).map(b => b.toString(16).padStart(2, "0").toUpperCase()).join(" ");
+				console.log(`[Scale RECV] ${chunk.length}B: [${hex}]  ackWaiterActive=${!!this._ackWaiter}`);
+
 				// During the ENQ→DC1 handshake phase, intercept the ACK (0x06) byte.
 				// Any 0x06 arriving before DC1 is sent must be the scale's ACK response.
 				if (this._ackWaiter && chunk instanceof Uint8Array) {
 					const ackIdx = chunk.indexOf(0x06);
 					if (ackIdx !== -1) {
+						console.log(`[Scale ACK] 0x06 found at byte index ${ackIdx} — resolving _waitForAck`);
 						// Pass any non-ACK bytes (before or after) to the buffer
 						const rest = new Uint8Array([
 							...chunk.slice(0, ackIdx),
@@ -73,6 +77,8 @@ class WeightService {
 						this._ackWaiter = null;
 						resolve(); // unblock _waitForAck()
 						return;
+					} else {
+						console.log(`[Scale ACK] chunk received but no 0x06 found — forwarding to buffer`);
 					}
 				}
 				this._buffer.push(chunk);
@@ -290,11 +296,15 @@ class WeightService {
 
 			let settled = false;
 
+			const _pollT0 = performance.now();
+			const _ms = () => (performance.now() - _pollT0).toFixed(1) + "ms";
+
 			const timeout = setTimeout(() => {
 				if (settled) return;
 				settled = true;
 				this._ackWaiter = null; // cancel any pending ACK wait
 				this._buffer.flush();
+				console.warn(`[Scale TIMEOUT] No frame after ${_ms()} — READ_TIMEOUT`);
 				reject(new ScaleError(
 					ScaleErrorCode.READ_TIMEOUT,
 					`No response from scale within ${WeightService.READ_TIMEOUT_MS}ms. ` +
@@ -310,10 +320,15 @@ class WeightService {
 				// Reset to avoid receiving the next poll's frame in this handler
 				this._buffer.onFrame(null);
 
+				const hex = Array.from(frame).map(b => b.toString(16).padStart(2, "0").toUpperCase()).join(" ");
+				console.log(`[Scale FRAME] received at ${_ms()}: [${hex}]`);
+
 				try {
 					const reading = this._parser.parse(frame);
+					console.log(`[Scale PARSE] OK → ${reading.toString()}`);
 					resolve(reading);
 				} catch (err) {
+					console.error(`[Scale PARSE] ERROR:`, err.message);
 					reject(err instanceof ScaleError ? err : new ScaleError(
 						ScaleErrorCode.PARSE_ERROR, err.message, err
 					));
@@ -332,10 +347,16 @@ class WeightService {
 			try {
 				const handshake = this._parser.requestFrame();
 				if (handshake) {
+					console.log(`[Scale ENQ] sending 0x05 at ${_ms()}`);
 					await this._serial.write(handshake.phase1);             // ENQ
 					await this._waitForAck(300);                            // wait for ACK byte (0x06) or 300ms timeout
-					if (settled) return;                                    // poll already timed out while waiting for ACK
+					if (settled) {
+						console.log(`[Scale DC1] SKIPPED — poll already timed out at ${_ms()}`);
+						return;                                             // poll already timed out while waiting for ACK
+					}
+					console.log(`[Scale DC1] sending 0x11 at ${_ms()}`);
 					await this._serial.write(handshake.phase2);             // DC1
+					console.log(`[Scale DC1] sent — waiting for frame`);
 				} else {
 					const cmd = this._config.command;
 					if (cmd) await this._serial.write(cmd);
@@ -345,6 +366,7 @@ class WeightService {
 					settled = true;
 					clearTimeout(timeout);
 					this._buffer.onFrame(null);
+					console.error(`[Scale WRITE ERROR]`, err.message);
 					reject(err);
 				}
 			}
@@ -362,15 +384,22 @@ class WeightService {
 	 */
 	_waitForAck(timeoutMs = 300) {
 		return new Promise((resolve) => {
+			const t0 = performance.now();
+			console.log(`[Scale ACK WAIT] started — will timeout after ${timeoutMs}ms`);
+
 			const timer = setTimeout(() => {
 				// ACK didn't arrive in time — clear the waiter and send DC1 anyway.
 				// This handles scales that skip ACK or adapters with extreme latency.
+				const elapsed = (performance.now() - t0).toFixed(1);
+				console.warn(`[Scale ACK WAIT] TIMED OUT after ${elapsed}ms — no 0x06 received, sending DC1 anyway`);
 				this._ackWaiter = null;
 				resolve();
 			}, timeoutMs);
 
 			this._ackWaiter = () => {
 				clearTimeout(timer);
+				const elapsed = (performance.now() - t0).toFixed(1);
+				console.log(`[Scale ACK WAIT] ACK received after ${elapsed}ms — proceeding to DC1`);
 				resolve();
 			};
 		});
