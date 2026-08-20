@@ -349,10 +349,14 @@ class WeightService {
 				if (handshake) {
 					console.log(`[Scale ENQ] sending 0x05 at ${_ms()}`);
 					await this._serial.write(handshake.phase1);             // ENQ
-					await this._waitForAck(300);                            // wait for ACK byte (0x06) or 300ms timeout
+					const ackReceived = await this._waitForAck(300);        // true if 0x06 arrived, false if timed out
 					if (settled) {
 						console.log(`[Scale DC1] SKIPPED — poll already timed out at ${_ms()}`);
 						return;                                             // poll already timed out while waiting for ACK
+					}
+					if (!ackReceived) {
+						console.log(`[Scale DC1] SKIPPED — no ACK received at ${_ms()}`);
+						return;                                             // do not send DC1 without a real ACK
 					}
 					console.log(`[Scale DC1] sending 0x11 at ${_ms()}`);
 					await this._serial.write(handshake.phase2);             // DC1
@@ -379,8 +383,8 @@ class WeightService {
 
 	/**
 	 * Wait for the ACK byte (0x06) to arrive from the scale, up to `timeoutMs`.
-	 * Resolves when ACK is detected by the onData interceptor (this._ackWaiter).
-	 * If ACK never arrives within the timeout, resolves anyway so DC1 is still sent.
+	 * Resolves true when ACK is detected by the onData interceptor (this._ackWaiter).
+	 * Resolves false if ACK never arrives within the timeout.
 	 */
 	_waitForAck(timeoutMs = 300) {
 		return new Promise((resolve) => {
@@ -388,19 +392,19 @@ class WeightService {
 			console.log(`[Scale ACK WAIT] started — will timeout after ${timeoutMs}ms`);
 
 			const timer = setTimeout(() => {
-				// ACK didn't arrive in time — clear the waiter and send DC1 anyway.
-				// This handles scales that skip ACK or adapters with extreme latency.
+				// ACK didn't arrive in time — clear the waiter and report no-ACK.
+				// Caller (_pollOnce) will skip sending DC1 in this case.
 				const elapsed = (performance.now() - t0).toFixed(1);
-				console.warn(`[Scale ACK WAIT] TIMED OUT after ${elapsed}ms — no 0x06 received, sending DC1 anyway`);
+				console.warn(`[Scale ACK WAIT] TIMED OUT after ${elapsed}ms — no 0x06 received`);
 				this._ackWaiter = null;
-				resolve();
+				resolve(false);
 			}, timeoutMs);
 
 			this._ackWaiter = () => {
 				clearTimeout(timer);
 				const elapsed = (performance.now() - t0).toFixed(1);
 				console.log(`[Scale ACK WAIT] ACK received after ${elapsed}ms — proceeding to DC1`);
-				resolve();
+				resolve(true);
 			};
 		});
 	}
