@@ -52,26 +52,40 @@ class FakeFX120Port {
 	}
 
 	_createStreams() {
-		this._controller = null;
+		this._controller      = null;
+		// Tracked explicitly because neither stream exposes a public "closed"
+		// boolean — only .locked, which isn't enough: a stream can be cleanly
+		// unlocked (releaseLock() called) while still being closed, and any
+		// write/read against a closed stream throws "Invalid state".
+		this._readableClosed  = false;
+		this._writableClosed  = false;
 
 		this.readable = new ReadableStream({
 			start: (controller) => {
 				this._controller = controller;
 			},
+			cancel: () => {
+				this._readableClosed = true;
+			},
 		});
 
 		this.writable = new WritableStream({
 			write: (chunk) => this._onWrite(chunk),
+			close: () => {
+				this._writableClosed = true;
+			},
+			abort: () => {
+				this._writableClosed = true;
+			},
 		});
 	}
 	async open(options) {
-		// A real SerialPort gets fresh streams when it is opened again.
-		// Recreate them if the previous connection closed them.
+		// A real SerialPort always hands back genuinely usable streams on a
+		// successful reopen. Recreate ours whenever the previous session left
+		// them locked OR closed — .locked alone isn't sufficient (see above).
 		if (
-			!this.readable ||
-			this.readable.locked ||
-			!this.writable ||
-			this.writable.locked
+			!this.readable || this.readable.locked || this._readableClosed ||
+			!this.writable || this.writable.locked || this._writableClosed
 		) {
 			this._createStreams();
 		}
@@ -92,6 +106,7 @@ class FakeFX120Port {
 			}
 		} catch {}
 
+		this._readableClosed = true;
 		this._controller = null;
 	}
 

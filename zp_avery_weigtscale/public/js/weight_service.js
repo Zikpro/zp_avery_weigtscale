@@ -56,6 +56,12 @@ class WeightService {
 		this._connected = false;
 		this._ackWaiter = null; // set during ENQ→DC1 phase to intercept the ACK byte
 
+		// Bumped by disconnect() to invalidate any _pollOnce() already in flight.
+		// A running poll captures the value at start and checks it at every resume
+		// point; if it no longer matches, the poll stops itself before writing
+		// again or scheduling anything further.
+		this._pollGeneration = 0;
+
 		if (!debugMode) {
 			this._serial.onData(chunk => {
 				const hex = Array.from(chunk).map(b => b.toString(16).padStart(2, "0").toUpperCase()).join(" ");
@@ -165,6 +171,11 @@ class WeightService {
 	 * Close the port and stop any active polling.
 	 */
 	async disconnect() {
+		// Invalidate any _pollOnce() already in flight BEFORE touching the
+		// serial layer — it will notice at its next resume point and stop
+		// itself instead of writing to a port that's being torn down.
+		this._pollGeneration++;
+
 		this.stopPolling();
 
 		if (!this._debugMode && this._serial) {
@@ -289,6 +300,9 @@ class WeightService {
 	 * Resolves with a parsed WeightReading or rejects with a ScaleError.
 	 */
 	_pollOnce() {
+		const myGeneration = this._pollGeneration;
+		const isInvalidated = () => myGeneration !== this._pollGeneration;
+
 		return new Promise(async (resolve, reject) => {
 			// Discard any leftover bytes from a previous poll (e.g. a stale ACK byte
 			// that arrived after the frame was already emitted).
@@ -298,6 +312,20 @@ class WeightService {
 
 			const _pollT0 = performance.now();
 			const _ms = () => (performance.now() - _pollT0).toFixed(1) + "ms";
+
+			// Call at every resume point, before doing anything further. Returns
+			// true (and settles the poll) if disconnect() ran since this poll
+			// started — the caller must `return` immediately when this is true.
+			const bailIfInvalidated = () => {
+				if (settled || !isInvalidated()) return false;
+				settled = true;
+				clearTimeout(timeout);
+				this._ackWaiter = null;
+				this._buffer.onFrame(null);
+				console.log(`[Scale POLL] invalidated by disconnect() at ${_ms()} — no further writes or scheduling`);
+				reject(new ScaleError(ScaleErrorCode.CONNECTION_LOST, "Poll cancelled — disconnect() was called."));
+				return true;
+			};
 
 			const timeout = setTimeout(() => {
 				if (settled) return;
@@ -347,6 +375,8 @@ class WeightService {
 			try {
 				console.log("[Scale POLL] _pollOnce() started");
 
+				if (bailIfInvalidated()) return;
+
 				const handshake = this._parser.requestFrame();
 
 				console.log("[Scale POLL] requestFrame() returned:", handshake);
@@ -365,12 +395,16 @@ class WeightService {
 
 					console.log("[Scale ENQ] 0x05 write completed");
 
+					if (bailIfInvalidated()) return;
+
 					const ackReceived = await this._waitForAck(300);
 
 					console.log(
 						"[Scale ACK RESULT]",
 						ackReceived
 					);
+
+					if (bailIfInvalidated()) return;
 
 					if (settled) {
 						console.log(
@@ -401,6 +435,7 @@ class WeightService {
 					);
 
 					if (cmd) {
+						if (bailIfInvalidated()) return;
 						await this._serial.write(cmd);
 					}
 				}
