@@ -147,25 +147,39 @@ class SerialManager {
 	 * Write a command to the scale. Accepts a string (e.g. "W") or a Uint8Array
 	 * of raw bytes (e.g. ENQ 0x05, DC1 0x11 for the ENQ/ACK/DC1 handshake).
 	 *
+	 * DIAGNOSTIC CHANGE: acquires a fresh writer lock for this single write and
+	 * releases it immediately after, instead of reusing one persistent writer
+	 * for the life of the connection — matching the working scale-listener.html
+	 * tool's sendRaw() pattern. Testing whether holding one writer lock open
+	 * for the whole session (the previous behaviour) is implicated in the
+	 * READ_TIMEOUT alternation. No other behaviour changed.
+	 *
 	 * @param {string|Uint8Array|number[]} command
 	 */
 	async write(command) {
-		if (!this._writer) {
+		if (!this._port || !this._port.writable) {
 			throw new ScaleError(ScaleErrorCode.CONNECTION_FAILED, "Serial port is not open.");
 		}
 
+		let bytes;
+		if (command instanceof Uint8Array) {
+			bytes = command;
+		} else if (Array.isArray(command)) {
+			bytes = new Uint8Array(command);
+		} else {
+			bytes = new TextEncoder().encode(String(command));
+		}
+
+		let writer;
 		try {
-			let bytes;
-			if (command instanceof Uint8Array) {
-				bytes = command;
-			} else if (Array.isArray(command)) {
-				bytes = new Uint8Array(command);
-			} else {
-				bytes = new TextEncoder().encode(String(command));
-			}
-			await this._writer.write(bytes);
+			writer = this._port.writable.getWriter();
+			await writer.write(bytes);
 		} catch (err) {
 			throw new ScaleError(ScaleErrorCode.WRITE_FAILED, err.message, err);
+		} finally {
+			if (writer) {
+				try { writer.releaseLock(); } catch {}
+			}
 		}
 	}
 
@@ -174,11 +188,11 @@ class SerialManager {
 	// =========================================================================
 
 	_setupWriter() {
-		// Write directly to port.writable so both string commands and raw byte
-		// arrays (e.g. ENQ 0x05, DC1 0x11 for the handshake) can be sent without
-		// a TextEncoderStream in the middle.
-		this._writer = this._port.writable.getWriter();
-		this._encoder = null; // not used; kept as field so _releaseWriter is safe
+		// No persistent writer is acquired here anymore — write() now gets its
+		// own writer lock per call (see write() for why). Kept as a no-op call
+		// site in connect() so the surrounding structure is unchanged.
+		this._writer  = null;
+		this._encoder = null;
 	}
 
 	_startReadLoop() {
@@ -237,21 +251,34 @@ class SerialManager {
 	}
 
 	async _releaseWriter() {
-		if (this._writer) {
-			console.log(`[Scale DISCONNECT] calling writer.close()`);
-			try {
-				// Close the writer so port.close() can proceed cleanly.
-				// (Web Serial requires both readable and writable to be closed first.)
-				await this._writer.close();
-				console.log(`[Scale DISCONNECT] writer.close() SUCCESS`);
-			} catch (err) {
-				console.error(`[Scale DISCONNECT] writer.close() FAILED:`, err.message, "— port may stay locked");
-			}
+		// write() no longer holds a persistent writer (see write()), so there is
+		// normally nothing locked here. Preserve the original intent — flush
+		// buffered data via writer.close() before port.close() — by acquiring
+		// one last writer just for that, same as write() does per-call.
+		if (!this._port || !this._port.writable || this._port.writable.locked) {
+			console.log(`[Scale DISCONNECT] no writer to release`);
 			this._writer  = null;
 			this._encoder = null;
-		} else {
-			console.log(`[Scale DISCONNECT] no writer to release`);
+			return;
 		}
+
+		console.log(`[Scale DISCONNECT] calling writer.close()`);
+		let writer;
+		try {
+			writer = this._port.writable.getWriter();
+			// Close the writer so port.close() can proceed cleanly.
+			// (Web Serial requires both readable and writable to be closed first.)
+			await writer.close();
+			console.log(`[Scale DISCONNECT] writer.close() SUCCESS`);
+		} catch (err) {
+			console.error(`[Scale DISCONNECT] writer.close() FAILED:`, err.message, "— port may stay locked");
+		} finally {
+			if (writer) {
+				try { writer.releaseLock(); } catch {}
+			}
+		}
+		this._writer  = null;
+		this._encoder = null;
 	}
 
 	_handleUnexpectedDisconnect(err = null) {

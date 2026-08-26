@@ -126,7 +126,7 @@ class WeightService {
 		}
 
 		const debugMode = Boolean(config.debug_mode);
-		const parser    = ParserRegistry.resolve(config.protocol || config.scale_model);
+		const parser = ParserRegistry.resolve(config.scale_model);
 
 		return new WeightService(config, parser, debugMode);
 	}
@@ -345,27 +345,66 @@ class WeightService {
 			// Streaming protocol (e.g. MettlerToledo, Generic):
 			//   requestFrame() returns null → send the text command from settings (e.g. "W").
 			try {
+				console.log("[Scale POLL] _pollOnce() started");
+
 				const handshake = this._parser.requestFrame();
+
+				console.log("[Scale POLL] requestFrame() returned:", handshake);
+
 				if (handshake) {
+					console.log(
+						"[Scale POLL] phase1:",
+						handshake.phase1,
+						"phase2:",
+						handshake.phase2
+					);
+
 					console.log(`[Scale ENQ] sending 0x05 at ${_ms()}`);
-					await this._serial.write(handshake.phase1);             // ENQ
-					const ackReceived = await this._waitForAck(300);        // true if 0x06 arrived, false if timed out
+
+					await this._serial.write(handshake.phase1);
+
+					console.log("[Scale ENQ] 0x05 write completed");
+
+					const ackReceived = await this._waitForAck(300);
+
+					console.log(
+						"[Scale ACK RESULT]",
+						ackReceived
+					);
+
 					if (settled) {
-						console.log(`[Scale DC1] SKIPPED — poll already timed out at ${_ms()}`);
-						return;                                             // poll already timed out while waiting for ACK
+						console.log(
+							`[Scale DC1] SKIPPED — poll already timed out at ${_ms()}`
+						);
+						return;
 					}
+
 					if (!ackReceived) {
-						console.log(`[Scale DC1] SKIPPED — no ACK received at ${_ms()}`);
-						return;                                             // do not send DC1 without a real ACK
+						console.log(
+							`[Scale DC1] SKIPPED — no ACK received at ${_ms()}`
+						);
+						return;
 					}
+
 					console.log(`[Scale DC1] sending 0x11 at ${_ms()}`);
-					await this._serial.write(handshake.phase2);             // DC1
-					console.log(`[Scale DC1] sent — waiting for frame`);
+
+					await this._serial.write(handshake.phase2);
+
+					console.log("[Scale DC1] sent — waiting for frame");
+
 				} else {
 					const cmd = this._config.command;
-					if (cmd) await this._serial.write(cmd);
+
+					console.log(
+						"[Scale POLL] No handshake; command =",
+						cmd
+					);
+
+					if (cmd) {
+						await this._serial.write(cmd);
+					}
 				}
-			} catch (err) {
+			}catch (err) {
 				if (!settled) {
 					settled = true;
 					clearTimeout(timeout);
