@@ -131,7 +131,20 @@ class FakeFX120Port {
 		}
 	}
 
+	/** Test-only: force the next ENQ to get no ACK at all (precise control for
+	 *  constructing exact success/miss patterns, independent of minGapMs timing). */
+	dropNextAck() {
+		this._dropNextAck = true;
+	}
+
 	_handleEnq() {
+		if (this._dropNextAck) {
+			this._dropNextAck = false;
+			this._awaitingDC1 = false;
+			this._logLine(`[MOCK] dropNextAck() active — staying silent for this ENQ`);
+			return;
+		}
+
 		const sinceLastFrame = performance.now() - this._lastFrameSentAt;
 
 		if (this.minGapMs > 0 && sinceLastFrame < this.minGapMs) {

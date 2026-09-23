@@ -385,4 +385,237 @@ T("ScaleSimulator.setWeight() changes the simulated target", async (A) => {
 	A.ok(Math.abs(stableReading.value - 5.0) < 0.05, `value near 5kg, got ${stableReading.value}`);
 });
 
+// ─── WeightService polling: ACK handling and timeouts ────────────────────────
+//
+// These exercise the real WeightService → SerialManager → SerialBuffer →
+// AveryBerkelFX120Parser flow with only the physical SerialPort replaced by
+// FakeFX120Port. They require fx120_mock_port.js to be loaded first.
+
+const FX_CONFIG = {
+	enabled            : 1,
+	scale_model        : "Avery Berkel FX120",
+	baud_rate          : 2400,
+	data_bits          : 7,
+	stop_bits          : 1,
+	parity             : "None",
+	stable_weight_only : 0,
+	read_interval      : 120,
+};
+
+/** Wire a FakeFX120Port up to a real WeightService and connect it. */
+async function fxSetup(portOpts = {}, configOverrides = {}, parser = null) {
+	const writes = [];
+	const port = new FakeFX120Port({
+		weight : 1250,
+		status : 0x29, // bit 5 set → stable
+		log    : (line) => writes.push(line),
+		...portOpts,
+	});
+	installFakeSerial(port);
+
+	const service = new WeightService(
+		{ ...FX_CONFIG, ...configOverrides },
+		parser || ParserRegistry.resolve(FX_CONFIG.scale_model),
+		false,
+	);
+	await service.connect();
+
+	return {
+		port,
+		service,
+		/** True when DC1 (0x11) was written to the scale at least once. */
+		sawDc1: () => writes.some(l => l.includes("POS -> Scale: [11]")),
+		writes,
+	};
+}
+
+const fxDelay = (ms) => new Promise(r => setTimeout(r, ms));
+
+/** Poll `fn` until it returns truthy, or give up. Avoids brittle fixed waits. */
+async function fxWaitUntil(fn, timeoutMs = 5000) {
+	const t0 = performance.now();
+	while (performance.now() - t0 < timeoutMs) {
+		if (fn()) return true;
+		await fxDelay(20);
+	}
+	return false;
+}
+
+T("A. Normal ACK → DC1 → frame parses the weight", async (A) => {
+	const { service, sawDc1 } = await fxSetup({ weight: 1250 });
+	try {
+		const reading = await service.getWeight();
+		A.equal(reading.value,  1.25, "weight parsed from frame");
+		A.equal(reading.stable, true, "status bit 5 reports stable");
+		A.ok(sawDc1(), "DC1 was sent after the ACK");
+	} finally {
+		await service.disconnect();
+	}
+});
+
+T("B. Missing ACK skips DC1 and ends the poll without the frame backstop", async (A) => {
+	const { port, service, sawDc1 } = await fxSetup();
+	try {
+		port.dropNextAck();
+
+		const t0 = performance.now();
+		await A.throwsAsync(
+			() => service.getWeight(),
+			ScaleErrorCode.READ_TIMEOUT,
+			"poll rejects when no ACK arrives",
+		);
+		const elapsed = performance.now() - t0;
+
+		A.notOk(sawDc1(), "DC1 must not be sent when the ACK was missed");
+		// Without the immediate-fail path this would run to READ_TIMEOUT_MS.
+		// It should instead end at the ACK wait (~300ms).
+		A.ok(
+			elapsed < 500,
+			`poll ended in ${elapsed.toFixed(0)}ms, not the ${WeightService.READ_TIMEOUT_MS}ms backstop`,
+		);
+	} finally {
+		await service.disconnect();
+	}
+});
+
+T("C. The poll after a missed ACK retries and succeeds", async (A) => {
+	const { port, service } = await fxSetup({ weight: 764 });
+	try {
+		port.dropNextAck();
+		await A.throwsAsync(() => service.getWeight(), ScaleErrorCode.READ_TIMEOUT, "first poll misses");
+
+		const reading = await service.getWeight();
+		A.equal(reading.value,  0.764, "next poll returns the weight");
+		A.equal(reading.stable, true,  "and it is stable");
+	} finally {
+		await service.disconnect();
+	}
+});
+
+T("D. A frame that never arrives after DC1 fails on the ~600ms backstop", async (A) => {
+	// ACK normally, but delay the frame far beyond the backstop.
+	const { service, sawDc1 } = await fxSetup({ frameDelayMs: 5000 });
+	try {
+		const t0 = performance.now();
+		await A.throwsAsync(
+			() => service.getWeight(),
+			ScaleErrorCode.READ_TIMEOUT,
+			"poll rejects when the frame never arrives",
+		);
+		const elapsed = performance.now() - t0;
+
+		A.ok(sawDc1(), "DC1 was sent — this is the real backstop path");
+		A.ok(
+			elapsed >= WeightService.READ_TIMEOUT_MS - 120,
+			`waited for the backstop, got ${elapsed.toFixed(0)}ms`,
+		);
+		A.ok(
+			elapsed < WeightService.READ_TIMEOUT_MS + 400,
+			`backstop fired near ${WeightService.READ_TIMEOUT_MS}ms, got ${elapsed.toFixed(0)}ms`,
+		);
+	} finally {
+		await service.disconnect();
+	}
+});
+
+T("E. A single missed poll emits no cashier-facing scale:error", async (A) => {
+	const { port, service } = await fxSetup({ weight: 1250 });
+	let errors  = 0;
+	let weights = 0;
+	const onError  = () => { errors++; };
+	const onWeight = () => { weights++; };
+
+	window.addEventListener("scale:error",  onError);
+	window.addEventListener("scale:weight", onWeight);
+
+	try {
+		port.dropNextAck();      // first poll of the loop misses its ACK
+		service.startPolling();
+		await fxDelay(900);      // missed poll + at least one retry
+		service.stopPolling();
+
+		A.equal(errors, 0, "no scale:error surfaced for a recoverable miss");
+		A.ok(weights > 0, `polling continued and produced ${weights} reading(s)`);
+	} finally {
+		window.removeEventListener("scale:error",  onError);
+		window.removeEventListener("scale:weight", onWeight);
+		await service.disconnect();
+	}
+});
+
+T("F. Connect → disconnect → connect still reads a weight", async (A) => {
+	const { port, service } = await fxSetup({ weight: 2456 });
+	try {
+		const first = await service.getWeight();
+		A.equal(first.value, 2.456, "reading before the reconnect");
+
+		await service.disconnect();
+		await service.connect();
+
+		const second = await service.getWeight();
+		A.equal(second.value, 2.456, "reading after the reconnect");
+		A.ok(port.readable && port.writable, "streams are usable again");
+	} finally {
+		await service.disconnect();
+	}
+});
+
+T("G. A parse error during polling still reaches the cashier", async (A) => {
+	// Real ENQ/ACK/DC1/frame flow, but the parser rejects what arrives.
+	const realParser = ParserRegistry.resolve(FX_CONFIG.scale_model);
+	const failingParser = {
+		constructor        : realParser.constructor,
+		getFrameTerminator : () => realParser.getFrameTerminator(),
+		requestFrame       : () => realParser.requestFrame(),
+		parse              : () => {
+			throw new ScaleError(ScaleErrorCode.PARSE_ERROR, "malformed frame");
+		},
+	};
+
+	const { service } = await fxSetup({}, {}, failingParser);
+	const seen = [];
+	const onError = (e) => seen.push(e.detail.code);
+	window.addEventListener("scale:error", onError);
+
+	try {
+		service.startPolling();
+		const got = await fxWaitUntil(() => seen.length > 0, 3000);
+
+		A.ok(got, "a scale:error was emitted for the parse failure");
+		A.equal(seen[0], ScaleErrorCode.PARSE_ERROR, "it carries PARSE_ERROR");
+
+		// Polling must not stop for a recoverable error.
+		A.ok(service._pollTimer !== null, "polling continued after the parse error");
+	} finally {
+		service.stopPolling();
+		window.removeEventListener("scale:error", onError);
+		await service.disconnect();
+	}
+});
+
+T("H. An unsettled platform during polling still reaches the cashier", async (A) => {
+	// Status bit 5 clear → every reading is unstable → getWeight() gives up
+	// after MAX_STABLE_POLLS and throws UNSTABLE_WEIGHT.
+	const { service } = await fxSetup(
+		{ status: 0x09 },                                 // bit 5 clear → unstable
+		{ stable_weight_only: 1, read_interval: 1 },      // keep the 15 retries quick
+	);
+	const seen = [];
+	const onError = (e) => seen.push(e.detail.code);
+	window.addEventListener("scale:error", onError);
+
+	try {
+		service.startPolling();
+		const got = await fxWaitUntil(() => seen.length > 0, 5000);
+
+		A.ok(got, "a scale:error was emitted for the unsettled platform");
+		A.equal(seen[0], ScaleErrorCode.UNSTABLE_WEIGHT, "it carries UNSTABLE_WEIGHT");
+		A.ok(service._pollTimer !== null, "polling continued after the unstable error");
+	} finally {
+		service.stopPolling();
+		window.removeEventListener("scale:error", onError);
+		await service.disconnect();
+	}
+});
+
 window.ScaleTestSuite = ScaleTestSuite;

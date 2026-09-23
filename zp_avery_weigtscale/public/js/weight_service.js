@@ -32,7 +32,10 @@
  */
 class WeightService {
 
-	static READ_TIMEOUT_MS  = 3000;  // Give up waiting for a frame after 3s
+	static READ_TIMEOUT_MS  = 600;   // Backstop only: ACK received, DC1 sent, but no frame arrives.
+	                                  // Real frames land in ~60-70ms, so 600ms is a 10x margin.
+	                                  // A missed ACK is handled separately and ends the poll
+	                                  // immediately — it never waits on this timer at all.
 	static MAX_STABLE_POLLS = 15;    // Max polls before giving up on stability
 	static POLL_INTERVAL_MS = 500;   // Default interval for continuous polling
 
@@ -266,11 +269,20 @@ class WeightService {
 					? err
 					: new ScaleError(ScaleErrorCode.READ_TIMEOUT, err.message, err);
 
-				this._emit("scale:error", scaleErr);
-
 				if (!scaleErr.isRecoverable()) {
+					this._emit("scale:error", scaleErr);
 					this.stopPolling();
 					return;
+				}
+
+				// Recoverable — the loop continues below either way. A missed ACK
+				// or a frame that never arrived is a normal, transient part of
+				// polling this scale, so retry silently. Parse errors and an
+				// unsettled platform still reach the cashier as they did before.
+				if (scaleErr.code === ScaleErrorCode.READ_TIMEOUT) {
+					console.log(`[Scale POLL] recoverable miss (${scaleErr.code}) — silent retry`);
+				} else {
+					this._emit("scale:error", scaleErr);
 				}
 			}
 
@@ -414,9 +426,19 @@ class WeightService {
 					}
 
 					if (!ackReceived) {
+						// End the poll immediately — no frame is coming since DC1 is
+						// never sent. Do not fall through to (or wait on) the frame
+						// timeout at all; clear it and settle right here.
+						settled = true;
+						clearTimeout(timeout);
+						this._buffer.onFrame(null);
 						console.log(
-							`[Scale DC1] SKIPPED — no ACK received at ${_ms()}`
+							`[Scale DC1] SKIPPED — no ACK received at ${_ms()} — ending poll immediately`
 						);
+						reject(new ScaleError(
+							ScaleErrorCode.READ_TIMEOUT,
+							"No ACK received from the scale — skipping this poll."
+						));
 						return;
 					}
 
